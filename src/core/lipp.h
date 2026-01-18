@@ -292,6 +292,26 @@ public:
         return size;
     }
 
+    /// Count total number of nodes in the tree
+    size_t count_nodes() const {
+        std::stack<Node*> s;
+        s.push(root);
+        
+        size_t node_count = 0;
+        while (!s.empty()) {
+            Node* node = s.top();
+            s.pop();
+            node_count++;
+            
+            for (int i = 0; i < node->num_items; i++) {
+                if (BITMAP_GET(node->child_bitmap, i) == 1) {
+                    s.push(node->items[i].comp.child);
+                }
+            }
+        }
+        return node_count;
+    }
+
 private:
     struct Node;
     struct Item
