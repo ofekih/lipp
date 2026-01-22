@@ -122,7 +122,7 @@ public:
                 } else {
                     if (BITMAP_GET(node->none_bitmap, pos) == 1) {
                         RT_ASSERT(false);
-                    } else if (BITMAP_GET(node->child_bitmap, pos) == 0) {
+                    } else {
                         RT_ASSERT(node->items[pos].comp.data.key == key);
                         return node->items[pos].comp.data.value;
                     }
@@ -432,7 +432,9 @@ private:
         const double mid1_target = node->num_items / 3;
         const double mid2_target = node->num_items * 2 / 3;
 
-        node->model.a = (mid2_target - mid1_target) / (mid2_key - mid1_key);
+        // Avoid precision loss in float computation.
+        // node->model.a = (mid2_target - mid1_target) / (mid2_key - mid1_key);
+        node->model.a = (mid2_target - mid1_target) / (key2 - key1);
         node->model.b = mid1_target - node->model.a * mid1_key;
         RT_ASSERT(isfinite(node->model.a));
         RT_ASSERT(isfinite(node->model.b));
@@ -892,6 +894,127 @@ private:
 
         return path[0];
     }
+
+// Reimplement find, add lower_bound
+public:
+    bool find(const T& key, P& value) const {
+        Node* node = root;
+
+        while (true) {
+            int pos = PREDICT_POS(node, key);
+            if (BITMAP_GET(node->child_bitmap, pos) == 1) {
+                node = node->items[pos].comp.child;
+            } else {
+                if (BITMAP_GET(node->none_bitmap, pos) == 0 && node->items[pos].comp.data.key == key){
+                    value = node->items[pos].comp.data.value;
+                    return true;
+                }
+                return false;
+            }
+        }
+    }
+
+    struct StackTuple{
+        Node* node;
+        int index;
+        bitmap_t one_bitmap;
+    };
+
+    class LIPPIterator {
+        using lipp_type = LIPP<T, P, USE_FMCD>;
+
+        void bitmap_next_1(Node* node, int& index, bitmap_t& one_bitmap) const {
+            while(!one_bitmap && index + 1 < BITMAP_SIZE(node->num_items)){
+                index ++;
+                one_bitmap = ~(node->none_bitmap[index]);
+            }
+        }
+
+        void advance_stack() {
+            while(!stack.empty()){
+                StackTuple tuple = stack.top();
+                stack.pop();
+                bitmap_next_1(tuple.node, tuple.index, tuple.one_bitmap);
+                if (!tuple.one_bitmap){
+                    continue;
+                }
+                int next = BITMAP_NEXT_1(tuple.one_bitmap);
+                tuple.one_bitmap -= 1 << next;
+                int new_i = tuple.index * BITMAP_WIDTH + next;
+
+                stack.push(tuple);
+                Node* node = tuple.node;
+                if (BITMAP_GET(node->child_bitmap, new_i) == 0){
+                    it = node->items + new_i;
+                    return;
+                }
+
+                StackTuple ctuple;
+                ctuple.node = node->items[new_i].comp.child;
+                ctuple.index = 0;
+                ctuple.one_bitmap = ~(ctuple.node->none_bitmap[0]);
+                stack.push(ctuple);    
+            }
+            it = nullptr;
+        }
+    public:
+        using pointer = const Item *;
+        using reference = const Item &;
+
+        std::stack<StackTuple> stack;
+        Item* it;
+
+        LIPPIterator &operator++() {
+            advance_stack();
+            return *this;
+        }
+
+        LIPPIterator operator++(int) {
+            LIPPIterator i(it);
+            ++i;
+            return i;
+        }
+
+        reference operator*() const { return *it; }
+        pointer operator->() const { return &*it; };
+        bool operator==(const LIPPIterator &rhs) const { return it == rhs.it; }
+        bool operator!=(const LIPPIterator &rhs) const { return it != rhs.it; }
+    };
+    using iterator = LIPPIterator;
+
+    iterator lower_bound(const T& key) const {
+        iterator it;
+        Node* node = root;
+
+        while (true) {
+            int pos = PREDICT_POS(node, key);
+            StackTuple tuple;
+            tuple.node = node;
+            tuple.index = pos / BITMAP_WIDTH;
+            tuple.one_bitmap = ~(node->none_bitmap[tuple.index] | ((1 << ((pos % BITMAP_WIDTH) + 1)) - 1)); 
+            it.stack.push(tuple);
+            if (BITMAP_GET(node->child_bitmap, pos) == 1) {
+                node = node->items[pos].comp.child;
+            } else {
+                if (BITMAP_GET(node->none_bitmap, pos) == 0 && node->items[pos].comp.data.key >= key) {
+                    it.it = node->items + pos;
+                }
+                else{
+                    ++it;
+                }
+                return it;
+            }
+        }
+        
+        return end();
+    }
+
+    iterator end() const { 
+        iterator it;
+        it.it = nullptr;
+        return it;
+    }
 };
+
 
 #endif // __LIPP_H__
